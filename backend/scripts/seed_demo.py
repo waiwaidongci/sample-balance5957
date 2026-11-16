@@ -1,9 +1,12 @@
 import random
 from sqlalchemy import select,func
 from src.config.database import Base,engine,SessionLocal
-from src.models import User,SampleBatch,SampleUnit,MarginTarget,WeightRun,WeightReview
+from src.models import User,SampleBatch,SampleUnit,MarginTarget,WeightRun,WeightReview,ComparisonGroup
 from src.utils.security import hash_password
 from src.services.run_service import compute
+from src.schemas.comparison import GroupInput,GroupBatchInput,PublishInput
+from src.services import chain_service
+from src.config.queue import queue as redis_queue
 
 def seed():
     Base.metadata.create_all(engine)
@@ -31,5 +34,19 @@ def seed():
             run=WeightRun(name=name,batch_id=batch.id,created_by=user.id,tolerance=.00001,max_iterations=500,cap_ratio=12);db.add(run);db.commit();compute(db,run.id)
             if run.result['converged']:db.add(WeightReview(run_id=run.id,decision='approved',note='合成样本演示：边际已收敛，保留有效样本与方法边界。',reviewer_id=user.id));db.commit()
         counts={name:db.scalar(select(func.count()).select_from(model)) for name,model in [('users',User),('batches',SampleBatch),('units',SampleUnit),('targets',MarginTarget),('runs',WeightRun),('reviews',WeightReview)]}
+        chain_name='城区逐月 · 链式比较（冻结共同口径）'
+        if not db.scalar(select(ComparisonGroup).where(ComparisonGroup.name==chain_name)):
+            chain_batches=db.scalars(select(SampleBatch).where(SampleBatch.code.in_(['oct-pilot','nov-city','west-check'])).order_by(SampleBatch.id)).all()
+            labels={1:'10月',2:'11月',3:'12月'}
+            payload=GroupInput(name=chain_name,description='冻结共同目标与样本版本的逐月加权时长链式比较；更正只重算受影响链段。',tolerance=.0001,max_iterations=500,cap_ratio=12,batches=[GroupBatchInput(batch_id=b.id,month_label=labels[i+1]) for i,b in enumerate(chain_batches)])
+            try:
+                detail=chain_service.create_group(db,payload,user,redis_queue)
+                chain_service.compute_group(db,detail['id'],detail['version'])
+                ready=chain_service.detail(db,detail['id'])
+                if ready['status']=='ready':
+                    chain_service.publish(db,detail['id'],'演示种子：整组链段已收敛并通过分解对账，原子发布首版。',user)
+            except Exception:
+                db.rollback()
+        counts['chain_groups']=db.scalar(select(func.count()).select_from(ComparisonGroup))
         print(counts);return counts
 if __name__=='__main__':seed()

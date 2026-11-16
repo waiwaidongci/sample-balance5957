@@ -1,0 +1,11 @@
+import{request}from './client';
+import type{ChainGroup,ChainGroupDetail,ChainPublication,Target}from '../types/domain';
+export const getChains=()=>request<ChainGroup[]>('/chains');
+export const getChain=(id:number)=>request<ChainGroupDetail>(`/chains/${id}`);
+export const createChain=(data:unknown)=>request<ChainGroupDetail>('/chains',{method:'POST',body:JSON.stringify(data)});
+export const recomputeChain=(id:number)=>request<ChainGroupDetail>(`/chains/${id}/recompute`,{method:'POST'});
+export const refreshChainSample=(id:number,nodeId:number)=>request<ChainGroupDetail>(`/chains/${id}/nodes/${nodeId}/refresh-sample`,{method:'POST'});
+export const replaceChainTarget=(id:number,targets:Target[])=>request<ChainGroupDetail>(`/chains/${id}/target`,{method:'PUT',body:JSON.stringify({targets})});
+export const publishChain=(id:number,note:string)=>request<ChainPublication>(`/chains/${id}/publish`,{method:'POST',body:JSON.stringify({note})});
+export const getPublications=(id:number)=>request<ChainPublication[]>(`/chains/${id}/publications`);
+export const getPublication=(id:number)=>request<ChainPublication>(`/chains/publications/${id}`);

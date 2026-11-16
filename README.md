@@ -42,13 +42,25 @@ docker compose exec -T backend python -m scripts.seed_demo
 
 独立4样本oracle：A组目标60、B组40，其余两维50/50，权重应为30/30/20/20；加权时长23、原始25、ESS10000/2600、设计效应1.04。cap_ratio=1不能满足目标，必须显示未收敛。
 
+## 链式比较：冻结口径的逐月分解（页面05）
+
+研究所需要比较逐月加权出行时长，但各批次各用一套目标时，月间差值会混进人群构成变化。链式比较为一组批次**冻结共同目标与各自样本版本**，在同一口径下逐月校准，再把相邻月份的加权均值差值分解为两部分。实现位置 `backend/src/services/chain_service.py` 与 `decomposition.py`，结构见 `backend/migrations/002_chain_comparison.md`。
+
+1. **冻结口径**：建组时把锚点批次的边际目标快照为全组共同目标（`target_snapshot` + SHA256 + epoch），每个链节点冻结各自样本快照（`sample_snapshot` + SHA256 + epoch）。快照不可变，实时批次表后续改动不影响已冻结链；显式更正才推进 epoch 与链版本 `version`。
+2. **逐月校准**：worker 在共同目标下对每个节点跑同一套确定性 raking（容差/迭代/截断参数全组冻结），结果缓存于节点；校准输入 SHA256 未变的节点直接复用，不重算。
+3. **对称分解**：按 (分区×年龄组×方式) 三维格，以格份额 p 与格内加权平均时长 y 做 Kitagawa/Oaxaca–Blinder 对称分解：构成效应 = Σ½(p₁−p₀)(y₀+y₁)，时长效应 = Σ½(p₀+p₁)(y₁−y₀)。恒等式 (构成+时长) ≡ m₁−m₀ 逐链段落库并对账，残差超 1e-8 判失败；新增/消失格按零份额处理并标记 new/lost，整体计入构成效应。
+4. **增量重算**：样本更正只使该节点及其相邻链段失效，其余节点/链段按输入 checksum 原样结转（同 checksum 结果逐字节复用）；共同目标更正才全链重算。每个新版本一行 `chain_segments`，历史版本链段不覆盖。
+5. **版本隔离**：队列负载为 `组:版本`。worker 取组行 `FOR UPDATE` 且版本匹配才处理，陈旧任务直接丢弃；组处于 `recomputing` 时更正接口返回 409，并发更正与重算不能混用版本。确定性算法使失败恢复后的结果与一次完成完全一致（测试 `test_failure_recovery_equivalent` 断言逐字节相等）。
+6. **原子发布与保留**：仅当整组链段 `completed` 且全部月份收敛才可发布；单事务写入不可变 `chain_publications`（含整组快照与快照 SHA256），同版本重复发布幂等。新链未齐备前已发布版本始终可读，页面可下载发布快照 JSON。
+7. **页面能力**：链式比较页可建组（多批次+月份标签）、查看每个节点的样本/目标/参数依赖与全部 checksum、触发样本或目标更正、查看分解对账表与逐格明细、负责人原子发布并浏览历史发布。
+
 ## 页面与结构
 
-六个研究页面：总览、样本底册、目标边际、校准配置/记录、诊断结果、复核交付（含有权角色的审计）。BatchSelect、RunTable、CalibrationSummary、MarginTable跨页复用；PageHeading/ErrorNotice/StatusBadge为公共组件；useTask/usePolling与格式工具共享。初始3批共1280条样本、27个目标格、一个实际计算的初始运行及获批记录，种子73/74/75。
+七个研究页面：总览、样本底册、目标边际、校准配置/记录、链式比较（含依赖、分解对账与原子发布）、诊断结果、复核交付（含有权角色的审计）。BatchSelect、RunTable、CalibrationSummary、MarginTable跨页复用；PageHeading/ErrorNotice/StatusBadge为公共组件；useTask/usePolling与格式工具共享。初始3批共1280条样本、27个目标格、一个实际计算的初始运行及获批记录，另含一个三节点链式比较组及其发布记录，种子73/74/75。
 
-前端：`src/{api,stores,types,components/common,hooks,pages,router,utils,constants}`；后端：`src/{routes,controllers,services,models,schemas,middlewares,utils,constants,config}`；种子在`backend/scripts/seed_demo.py`，结构约束见`backend/migrations/001_schema.md`。测试、截图和TESTING只在批次`test-artifacts/gb-0015/`。
+前端：`src/{api,stores,types,components/common,hooks,pages,router,utils,constants}`；后端：`src/{routes,controllers,services,models,schemas,middlewares,utils,constants,config}`；种子在`backend/scripts/seed_demo.py`，结构约束见`backend/migrations/001_schema.md`与`002_chain_comparison.md`。链式比较的无外部依赖回归测试（SQLite 内存库 + 假队列）在 `backend/tests/test_chain.py`（9 项：分解 oracle、增量结转、失败恢复等价、版本隔离、原子发布等），HTTP 端到端在 `backend/tests/test_chain_api.py`，用 `PYTHONPATH` 指向依赖后可直接 `python3 tests/test_chain.py` 运行；截图和TESTING只在批次`test-artifacts/gb-0015/`。
 
-共享枚举Role/RunStatus/Dimension后端在`backend/src/constants/enums.py`，前端在`frontend/src/constants/enums.ts`；角色认证在middlewares/auth、auth store；状态用于run_service/worker/StatusBadge；Dimension用于target schema、raking维度与目标页。数据库字段采用相同枚举字符串。
+共享枚举Role/RunStatus/Dimension后端在`backend/src/constants/enums.py`（另含链式比较的GroupStatus/ChainNodeStatus），前端在`frontend/src/constants/enums.ts`；角色认证在middlewares/auth、auth store；状态用于run_service/worker/StatusBadge与链服务；Dimension用于target schema、raking维度与目标页。数据库字段采用相同枚举字符串。
 
 ## 环境与开发
 
@@ -56,7 +68,7 @@ Python3.11/FastAPI/SQLAlchemy/PyJWT，Vue3.5/TypeScript/Vite6.4.6，MySQL8、Red
 
 .env.example列出端口、数据库用户/密码、JWT密钥与SEED_DEMO；.env、node_modules、dist和日志被忽略。演示密码是公开本地账号。SEED_DEMO=true自动执行插入式自然键seed，不覆盖改动；失败记日志不阻塞服务。限流使用Redis每IP每分钟360次，统一错误响应并记录写操作审计。
 
-单worker的Redis BLPOP演示队列无处理中崩溃自动重投；需重新提交。CSV为文本导入，整批验证后写入且不覆盖已有编号；类别文本导出已做公式前缀转义。审批后才可导出。首次schema由metadata创建，未实现生产迁移升级。字体依赖网络。详见真实TESTING中的范围和执行结果。
+单worker的Redis BLPOP演示队列同时消费校准队列`balance:calibration`与链式比较队列`balance:chain`，无处理中崩溃自动重投；普通校准需重新提交，链任务可在页面“重投当前版本”按同版本恢复（已完成节点/链段跳过，结果与一次完成一致）。CSV为文本导入，整批验证后写入且不覆盖已有编号；类别文本导出已做公式前缀转义。审批后才可导出。首次schema由metadata创建，未实现生产迁移升级。字体依赖网络。详见真实TESTING中的范围和执行结果。
 
 ## License
 

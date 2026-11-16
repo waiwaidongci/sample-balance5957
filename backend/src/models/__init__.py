@@ -5,3 +5,7 @@ from .unit import SampleUnit
 from .target import MarginTarget
 from .run import WeightRun
 from .review import WeightReview
+from .comparison import ComparisonGroup
+from .group_batch import GroupBatch
+from .chain_segment import ChainSegment
+from .publication import ChainPublication

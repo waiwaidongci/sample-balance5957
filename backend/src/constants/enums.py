@@ -12,3 +12,13 @@ class Dimension(StrEnum):
     ZONE='zone'
     AGE_BAND='age_band'
     MODE='mode'
+class GroupStatus(StrEnum):
+    DRAFT='draft'
+    RECOMPUTING='recomputing'
+    READY='ready'
+    FAILED='failed'
+class ChainNodeStatus(StrEnum):
+    QUEUED='queued'
+    RUNNING='running'
+    COMPLETED='completed'
+    FAILED='failed'
